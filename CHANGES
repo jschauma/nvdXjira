@@ -1,0 +1,8 @@
+2013-05-10: Version 0.0.4
+- don't print data unless we list or have created new tickets
+
+2013-05-10: Version 0.0.3
+- avoid opening duplicates
+
+2013-05-10: Version 0.0.2
+- [SECURITY-8560]: print details for new tickets if requested

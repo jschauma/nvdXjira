@@ -1,0 +1,416 @@
+#! /usr/bin/env python
+#
+# This little tool reads input from an sqlite3 database of NIST's NVD and
+# cross references tickets in Jira, possibly creating new tickets.
+#
+# Copyright (c) 2013, Twitter, Inc. All rights reserved.
+#
+# Originally written by Jan Schaumann <jschauma@netmeister.org> in April
+# 2013.
+
+import BaseHTTPServer
+import getopt
+import json
+import os
+import re
+import sqlite3
+import sys
+import urllib
+import urllib2
+
+DEFAULTS = {
+    "action"        : "list",
+    "config"        : "/etc/nvdXjira",
+    "database"      : "/var/db/cvedb/nvd.db",
+    "password"      : "",
+    "output-format" : "list",
+    "project"       : "VULN",
+    "tag"           : "cve",
+    "url"           : "",
+    "username"      : ""
+}
+
+EXIT_FAILURE = 1
+EXIT_SUCCESS = 0
+
+###
+### Classes
+###
+
+class CVE(object):
+    """A simple CVE object.  Its fields are 'interesting' bits of
+    information about a CVE."""
+
+    def __init__(self):
+        """Construct a CVE with default values."""
+        self.vulnfields = [ "last-modified-datetime",
+                            "published-datetime",
+                            "summary" ]
+        self.cvssfields = [ "access-complexity",
+                            "access-vector",
+                            "authentication",
+                            "availability-impact",
+                            "confidentiality-impact",
+                            "integrity-impact",
+                            "score" ]
+        self.data = {}
+        for field in self.vulnfields + self.cvssfields:
+            self.data[field] = ""
+        self.data['urls'] = []
+        self.data['vulnerable-software-list'] = []
+
+
+    def __repr__(self):
+        descr = "%s\n" % self.data['cve_id']
+        keys = self.data.keys()
+        keys.sort()
+        for k in keys:
+            val = self.data[k]
+            if type(val) == list:
+                val = ",".join(val)
+            descr += "%s : %s\n" % (k.ljust(25), val)
+
+        return descr
+
+
+
+class NVDXJIRA(object):
+
+    def __init__(self):
+        """Construct a NVDXJIRA with default values."""
+        self.config = DEFAULTS
+        self.frobbed = dict((x, False) for x in self.config.keys())
+        self.verbosity = 0
+
+
+    class Usage(Exception):
+        """A simple exception that provides a usage statement and a return
+        code."""
+
+        def __init__(self, rval):
+            self.err = rval
+            self.msg = 'Usage: %s [-hlnv] [-c file]' % os.path.basename(sys.argv[0])
+            self.msg += ' [-d dbfile] [-j url] [-o format] [-p project] [-t tag]\n'
+            self.msg += '\t-c file     read configuration from this file\n'
+            self.msg += '\t-d dbfile   update this database\n'
+            self.msg += '\t-h          print this message and exit\n'
+            self.msg += '\t-j url      jira base URL\n'
+            self.msg += '\t-l          list tickets\n'
+            self.msg += '\t-n          create new tickets\n'
+            self.msg += '\t-o format   specify output format ("list", or "details")\n'
+            self.msg += '\t-p project  jira project to create tickets in\n'
+            self.msg += '\t-t tag      label to tag new tickets with\n'
+            self.msg += '\t-v          increase verbosity\n'
+
+
+    def createTicket(self, cve, cookie):
+        """Create a new Jira ticket for the given CVE."""
+
+        cve_id = cve.data["cve_id"]
+
+        self.verbose("Creating ticket for %s..." % cve_id, 2)
+
+        description = cve.data["summary"]
+        description += "\n\n{noformat}\n%s\n{noformat}\n" % cve
+        description += "\n\nhttps://cve.mitre.org/cgi-bin/cvename.cgi?name=%s\n" % cve_id
+
+	summary = cve_id
+	if cve.data["score"]:
+		summary += " (CVSS: %s)" % cve.data["score"]
+
+        url = self.config["url"] + "/rest/api/latest/issue/"
+        data = {
+            "fields" : {
+                "project"     : {
+                    "key"     : "%s" % self.config["project"]
+                    },
+                "summary"     : summary,
+                "description" : description,
+                "labels"      : [ self.config["tag"] ],
+                "issuetype"   : { "name" : "Task" }
+                }
+            }
+        data = json.dumps(data).encode()
+        headers = { 'Content-Type' : 'application/json',
+                    'Accept' : 'application/json',
+                    'Cookie' : '%s=%s' % (cookie["name"], cookie["value"]) }
+
+        try:
+            req = urllib2.Request(url, data, headers)
+            res = urllib2.urlopen(req)
+        except urllib2.HTTPError, e:
+            sys.stderr.write("Unable to create ticket at '%s': %s %s\n" % \
+                                (url, e.code, BaseHTTPServer.BaseHTTPRequestHandler.responses[e.code][0]))
+            sys.stderr.write("Data posted:\n%s\n" % data)
+            sys.exit(EXIT_FAILURE)
+
+        ticket = None
+        data = json.loads(res.readline())
+        if data.has_key("key"):
+            ticket = data["key"]
+            self.verbose("Successfully created ticket %s." % ticket, 3)
+
+        return ticket
+
+
+
+    def getCVEs(self):
+        """Query the sqlite3 database and extract all CVEs.
+
+        Returns a list of CVE objects."""
+
+        db = self.config["database"]
+
+        self.verbose("Getting CVE ids from database '%s'..." % db)
+        if not os.path.exists(db):
+            sys.stderr.write("No such file or directory: %s\n" % db)
+            sys.exit(EXIT_FAILURE)
+
+        cves = []
+        try:
+            conn = sqlite3.connect(db)
+            c = conn.cursor()
+            for row in c.execute('''SELECT * FROM nvd'''):
+                cve = CVE()
+                cve.data = {
+                        "access_complexity"        : row[0],
+                        "access_vector"            : row[1],
+                        "authentication"           : row[2],
+                        "availability"             : row[3],
+                        "confidentiality_impact"   : row[4],
+                        "cve_id"                   : row[5],
+                        "integrity_impact"         : row[6],
+                        "last_modified_datetime"   : row[7],
+                        "published_datetime"       : row[8],
+                        "score"                    : row[9],
+                        "summary"                  : row[10],
+                        "urls"                     : row[11].split(","),
+                        "vulnerable_software_list" : row[12].split(",")
+                    }
+                cves.append(cve)
+            conn.close()
+        except sqlite3.Error, e:
+            sys.stderr.write("Unable to query DB file '%s'.\n" % db)
+            sys.stderr.write("I'd love to tell you why, but the python")
+            sys.stderr.write(" sqlite3 module does not expose the error codes.\n")
+            sys.stderr.write("I'm guessing permissions problems.\n")
+            sys.exit(EXIT_FAILURE)
+            # NOTREACHED
+
+        return cves
+
+
+    def getJiraCookie(self):
+        """Log in to the Jira API and retrieve a cookie."""
+
+        url = self.config["url"] + "/rest/auth/latest/session"
+        self.verbose("Logging in to Jira at %s as %s..." % (url, self.config["username"]))
+        credentials = { 'username' : self.config["username"],
+                        'password' : self.config["password"] }
+        data = json.dumps(credentials).encode()
+        headers = { 'Content-Type' : 'application/json',
+                    'Accept' : 'application/json' }
+
+        try:
+            req = urllib2.Request(url, data, headers)
+            res = urllib2.urlopen(req)
+        except urllib2.HTTPError, e:
+            sys.stderr.write("Unable to fetch '%s': %s %s\n" % \
+                                (url, e.code, BaseHTTPServer.BaseHTTPRequestHandler.responses[e.code][0]))
+            sys.exit(EXIT_FAILURE)
+
+        data = json.loads(res.readline())
+        return data["session"]
+
+
+    def getTickets(self, cve, cookie):
+        """Query Jira for all tickets mentioning this CVE and return them."""
+
+        self.verbose("Searching for tickets in Jira containing '%s'..." % cve, 2)
+        tickets = []
+
+        url = self.config["url"] + "/rest/api/latest/search?jql=text~%s" % cve
+        self.verbose("Searching Jira tickets using %s..." % url, 3)
+        headers = { 'Content-Type' : 'application/json',
+                    'Accept' : 'application/json',
+                    'Cookie' : '%s=%s' % (cookie["name"], cookie["value"]) }
+
+        try:
+            req = urllib2.Request(url, None, headers)
+            res = urllib2.urlopen(req)
+        except urllib2.HTTPError, e:
+            sys.stderr.write("Unable to fetch '%s': %s %s\n" % \
+                                (url, e.code, BaseHTTPServer.BaseHTTPRequestHandler.responses[e.code][0]))
+            sys.exit(EXIT_FAILURE)
+
+        data = json.loads(res.readline())
+        for t in data["issues"]:
+            tickets.append(t["key"])
+
+        return tickets
+
+
+    def parseConfigFile(self):
+        """Parse the configuration file and update any settings that were
+        not specified on the command-line."""
+
+        cfg = self.config["config"]
+        if not self.frobbed["config"] and not os.path.exists(cfg):
+            return
+
+        self.verbose("Parsing config file ('%s')..." % cfg)
+
+        n = 0
+        keyval = re.compile("(?P<key>.+?)\s*=\s*(?P<val>.+)")
+
+        try:
+            f = open(cfg, 'r')
+            for line in f.readlines():
+                n += 1
+                line = re.sub(r'#.*', '', line).strip()
+                if line:
+                    m = keyval.match(line)
+                    if not m:
+                        sys.stderr.write("Ignoring invalid syntax in line %d: '%s'\n" % (n, line))
+                    else:
+                        key = m.group('key').strip()
+                        val = m.group('val').strip()
+                        if self.config.has_key(key):
+                            # Only overwrite parameters that were not
+                            # changed via command-line flags.
+                            if not self.frobbed[key]:
+                                self.setConfigOption(key, val)
+                                # Do not leak an actual password onto the
+                                # terminal or into logs.
+                                if key == "password":
+                                    val = "XXXXXX"
+                                self.verbose("Setting %s to %s..." % (key, val), 2)
+                        else:
+                            sys.stderr.write("Ingoring unknown configuration parameter '%s'.\n" % key)
+            f.close()
+
+        except IOError, e:
+            sys.stderr.write("Unable to read '%s': %s\n" % (cfg, e.strerror))
+            sys.exit(EXIT_FAILURE)
+
+
+    def parseOptions(self, inargs):
+        """Parse given command-line optoins and set appropriate
+        attributes.
+
+        Arguments:
+            inargs -- arguments to parse
+
+        Raises:
+            Usage -- if '-h' or invalid command-line args are given
+        """
+
+        try:
+            opts, args = getopt.getopt(inargs, "c:d:hj:lno:p:t:v")
+        except getopt.GetoptError:
+            raise self.Usage(EXIT_FAILURE)
+
+        for o, a in opts:
+            if o in ("-c"):
+                self.setConfigOption("config", a)
+            if o in ("-d"):
+                self.setConfigOption("database", a)
+            if o in ("-h"):
+                raise self.Usage(EXIT_SUCCESS)
+            if o in ("-j"):
+                self.setConfigOption("url", a)
+            if o in ("-l"):
+                self.setConfigOption("action", "list")
+            if o in ("-n"):
+                self.setConfigOption("action", "create")
+            if o in ("-o"):
+                if a not in [ "list", "details" ]:
+                    sys.stderr.write("Invalid output format: %s\n" % a)
+                    sys.stderr.write("Valid options: details, list\n")
+                    sys.exit(EXIT_FAILURE)
+                self.setConfigOption("output-format", a)
+            if o in ("-p"):
+                self.setConfigOption("project", a)
+            if o in ("-t"):
+                self.setConfigOption("tag", a)
+            if o in ("-v"):
+                self.verbosity += 1
+
+        if args:
+            raise self.Usage(EXIT_FAILURE)
+
+
+    def printInfo(self, cve, ticket):
+        if self.config["output-format"] == "list":
+            print "%s: %s" % (cve.data["cve_id"], ticket)
+        else:
+            for t in ticket.split():
+                print "%sbrowse/%s" % (self.config["url"], t)
+            print cve
+
+
+    def setConfigOption(self, key, val):
+        """Set a configuration option."""
+        self.config[key] = val
+        self.frobbed[key] = True
+
+
+    def setDefaultUserAndPassword(self):
+            try:
+                self.config["username"] = os.environ["USER"]
+            except KeyError, e:
+                pass
+            if os.environ.has_key("NVDXJIRA_USER"):
+                self.setConfigOption("username", os.environ["NVDXJIRA_USER"])
+            if os.environ.has_key("NVDXJIRA_PASSWORD"):
+                self.setConfigOption("password", os.environ["NVDXJIRA_PASSWORD"])
+
+
+    def verbose(self, msg, level=1):
+        """Print given message to STDERR if the object's verbosity is >=
+        the given lefel."""
+
+        if (self.verbosity >= level):
+            sys.stderr.write("%s> %s\n" % ('=' * level, msg))
+
+###
+### "Main"
+###
+
+if __name__ == "__main__":
+    try:
+        nvdXjira = NVDXJIRA()
+        try:
+            nvdXjira.setDefaultUserAndPassword()
+            nvdXjira.parseOptions(sys.argv[1:])
+            nvdXjira.parseConfigFile()
+
+            cookie = nvdXjira.getJiraCookie()
+            new_tickets = []
+            for cve in nvdXjira.getCVEs():
+                cve_id = cve.data["cve_id"]
+                data = ""
+                tickets = nvdXjira.getTickets(cve_id, cookie)
+                if nvdXjira.config["action"] == "list":
+                    data = "No tickets found."
+                    if tickets:
+                        tickets.sort()
+                        data = " ".join(tickets)
+                elif not tickets:
+                    data = nvdXjira.createTicket(cve, cookie)
+
+                if data:
+                    nvdXjira.printInfo(cve, data)
+
+        except nvdXjira.Usage, u:
+            if (u.err == EXIT_FAILURE):
+                out = sys.stderr
+            else:
+                out = sys.stdout
+            out.write(u.msg)
+            sys.exit(u.err)
+	        # NOTREACHED
+
+    except KeyboardInterrupt:
+        # catch ^C, so we don't get a "confusing" python trace
+        sys.exit(EXIT_FAILURE)
