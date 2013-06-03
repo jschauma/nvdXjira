@@ -1,0 +1,97 @@
+NVDXJIRA(1)		NetBSD General Commands Manual		   NVDXJIRA(1)
+
+NAME
+     nvdXjira -- cross-reference CVEs from the NVD with Jira
+
+SYNOPSIS
+     nvdXjira [-hlnv] [-c file] [-d dbfile] [-j url] [-o format] [-p project]
+	      [-t tag]
+
+DESCRIPTION
+     The nvdXjira utility cross-references CVEs found in a local sqlite3 copy
+     of NIST's National Vulerability Database with a Jira instance.  That is,
+     for every CVE found in the database, it will look for tickets containing
+     the CVE identifier anywhere in the text.  For any CVEs not found in Jira,
+     nvdXjira can create a new ticket.
+
+OPTIONS
+     nvdXjira supports the following options:
+
+     -c file	 Read configuration from this file.
+
+     -d dbfile	 Read input from the given database file.
+
+     -h		 Print a short usage statement and exit.
+
+     -j url	 Specify the base URL for Jira.
+
+     -l		 List Jira tickets with their respective CVEs.	This is the
+		 default mode.
+
+     -n		 Create new tickets for CVEs not found in Jira.
+
+     -o format	 Specify output format.	 May be 'list' (default) or 'details'.
+
+     -p project	 If -n was specified, create new tickets in this project.
+
+     -t tag	 If -n was specified, tag new tickets with this tag/label.
+
+     -v		 Be verbose.  Can be specified multiple times.
+
+DETAILS
+     nvdXjira operates on an sqlite3 copy of NIST's National Vulnerability
+     Database, created using the nvd2sqlite3(1) utility.  It will loop over
+     all entries in the database, and, for each CVE found, query Jira for any
+     tickets containing the CVE identifier in its text, and either print the
+     ticket to CVE mappings (default) or create a new ticket for the CVE.
+
+     New tickets are, by default, created under the 'VULN' project, and tagged
+     with the 'cve' label.
+
+CONFIGURATION
+     By default, nvdXjira reads its configuration from the file /etc/nvdXjira
+     (if it exists).  In this file, you can specify the following key-
+     word=value pairs:
+
+     database	The pathname of the database to read input from.  Overwrite
+		using the -d flag.  Defaults to /var/db/cvedb/nvd.db.
+
+     project	The Jira project under which to create new tickets.  Overwrite
+		using the -p flag.  Defaults to 'VULN'.
+
+     url	The base URL for Jira API access.  Overwrite using the -u
+		flag.  No default value.
+
+     username	The username to authenticate as against the Jira API.  Over-
+		write using the NVDXJIRA_USER environment variable.  Defaults
+		to USER.
+
+     tag	The tag with which to label newly created tickets.  Overwrite
+		using the -n flag.  Defaults to 'cve'.
+
+     password	The password with which to authenticate against the Jira API.
+		Overwrite using the NVDXJIRA_PASSWORD environment variable.
+		No default value.
+
+EXAMPLES
+     To list all tickets for all CVEs in the database '/var/db/nvd.db'
+
+	   nvdXjira -d /var/db/nvd.db
+
+     To create new tickets for any CVEs found in the database but not yet in
+     Jira, using the 'security' project and tagging each ticket using the
+     'nvd' label:
+
+	   nvdXjira -n -d /var/db/cve.db -p security -t nvd
+
+EXIT STATUS
+     The nvdXjira utility exits 0 on success, and >0 if an error occurs.
+
+SEE ALSO
+     nvd2sqlite3(1), sqlite3(1), yvc(1)
+
+HISTORY
+     nvdXjira was originally written by Jan Schaumann
+     <jschauma@netmeister.org> in April 2013.
+
+NetBSD 5.0			 May 10, 2013			    NetBSD 5.0
