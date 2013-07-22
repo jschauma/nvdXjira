@@ -1,4 +1,4 @@
-.Dd May 10, 2013
+.Dd July 22, 2013
 .Dt NVDXJIRA 1
 .Os
 .Sh NAME
@@ -6,12 +6,13 @@
 .Nd cross-reference CVEs from the NVD with Jira
 .Sh SYNOPSIS
 .Nm
-.Op Fl hlnv
+.Op Fl Dhlnv
 .Op Fl c Ar file
 .Op Fl d Ar dbfile
 .Op Fl j Ar url
 .Op Fl o Ar format
 .Op Fl p Ar project
+.Op Fl r Ar file
 .Op Fl t Ar tag
 .Sh DESCRIPTION
 The
@@ -27,6 +28,9 @@ can create a new ticket.
 .Nm
 supports the following options:
 .Bl -tag -width p_project_
+.It Fl D
+Run in debug mode.
+No tickets will be created.
 .It Fl c Ar file
 Read configuration from this file.
 .It Fl d Ar dbfile
@@ -47,6 +51,9 @@ May be 'list' (default) or 'details'.
 If
 .Fl n
 was specified, create new tickets in this project.
+.It Fl r Ar file
+Read regular expressions from this file and immediately close any tickets
+where the body matches.
 .It Fl t Ar tag
 If
 .Fl n
@@ -83,12 +90,22 @@ Overwrite using the
 flag.
 Defaults to
 .Ar /var/db/cvedb/nvd.db .
+.It password
+The password with which to authenticate against the Jira API.
+Overwrite using the
+.Ar NVDXJIRA_PASSWORD
+environment variable.
+No default value.
 .It project
 The Jira project under which to create new tickets.
 Overwrite using the
 .Fl p
 flag.
 Defaults to 'VULN'.
+.It reject
+The pathname of a file containing regular expressions based on which to
+immediately close any tickets with a matching description.
+No default value.
 .It url
 The base URL for Jira API access.
 Overwrite using the
@@ -108,12 +125,6 @@ Overwrite using the
 .Fl n
 flag.
 Defaults to 'cve'.
-.It password
-The password with which to authenticate against the Jira API.
-Overwrite using the
-.Ar NVDXJIRA_PASSWORD
-environment variable.
-No default value.
 .El
 .Sh EXAMPLES
 To list all tickets for all CVEs in the database '/var/db/nvd.db'

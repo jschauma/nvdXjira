@@ -1,8 +1,9 @@
 MANPAGES=nvdXjira.1
+BUILDHOST=""
 
 help:
 	@echo "The following targets are available:"
-	@echo "build      build the RPM on opsnest1"
+	@echo "build      build the RPM on ${BUILDHOST}"
 	@echo "clean      remove any interim files"
 	@echo "help       print this help"
 	@echo "install    install nvd2sqlite3"
@@ -10,9 +11,9 @@ help:
 	@echo "uninstall  uninstall nvd2sqlite3"
 
 build:
-	@rsync -e ssh -avz . opsnest1:nvdXjira/.
-	@ssh opsnest1 "cd nvdXjira && make rpm"
-	@scp opsnest1:nvdXjira/dist/*rpm /tmp/
+	@rsync -e ssh -avz . ${BUILDHOST}:nvdXjira/.
+	@ssh ${BUILDHOST} "cd nvdXjira && make rpm"
+	@scp ${BUILDHOST}:nvdXjira/dist/*rpm /tmp/
 
 install: man-compress
 	python setup.py install

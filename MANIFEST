@@ -1,3 +1,4 @@
+conf/reject-patterns
 setup.py
 src/nvdXjira
 doc/nvdXjira.1.gz

@@ -1,3 +1,13 @@
+2013-07-22: Version 0.0.6
+- [SECURITY-9270]: ignore rejected CVEs
+  This is done by adding logic to parse a 'reject' file containing regular
+  expressions; if the CVE summary matches one of the regexes, it will be
+  closed after creation.
+- add Debug option
+
+2013-06-10: Version 0.0.5
+- add label with cvss score
+
 2013-05-10: Version 0.0.4
 - don't print data unless we list or have created new tickets
 

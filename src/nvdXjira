@@ -20,11 +20,13 @@ import urllib2
 
 DEFAULTS = {
     "action"        : "list",
-    "config"        : "/etc/nvdXjira",
+    "config"        : "/etc/nvdXjira/config",
     "database"      : "/var/db/cvedb/nvd.db",
+    "debug"         : False,
     "password"      : "",
     "output-format" : "list",
     "project"       : "VULN",
+    "reject"        : "/etc/nvdXjira/reject-patterns",
     "tag"           : "cve",
     "url"           : "",
     "username"      : ""
@@ -80,6 +82,7 @@ class NVDXJIRA(object):
         """Construct a NVDXJIRA with default values."""
         self.config = DEFAULTS
         self.frobbed = dict((x, False) for x in self.config.keys())
+        self.reject_patterns = {}
         self.verbosity = 0
 
 
@@ -103,10 +106,74 @@ class NVDXJIRA(object):
             self.msg += '\t-v          increase verbosity\n'
 
 
+    def closeTicket(self, ticket, cookie, reason="N/A"):
+        """Close the given ticket appending an optional reason."""
+
+        self.verbose("Closing ticket %s (%s)..." % (ticket, reason))
+
+        url = self.config["url"] + "/rest/api/latest/issue/" + ticket + "/transitions"
+        data = {
+            "update" : {
+                "comment" : [
+                    {
+                        "add": {
+                            "body": reason
+                        }
+                    }
+                ]
+            },
+            "fields" : {
+                "resolution" : {
+                    "name": "Cancelled"
+                }
+            },
+            "transition" : {
+                "id" : "5"
+            }
+        }
+        data = json.dumps(data).encode()
+
+        if self.config["debug"]:
+            print data
+        else:
+            headers = { 'Content-Type' : 'application/json',
+                        'Accept' : 'application/json',
+                        'Cookie' : '%s=%s' % (cookie["name"], cookie["value"]) }
+
+            try:
+                req = urllib2.Request(url, data, headers)
+                res = urllib2.urlopen(req)
+            except urllib2.HTTPError, e:
+                sys.stderr.write("Unable to close ticket at '%s': %s %s\n" % \
+                                (url, e.code, BaseHTTPServer.BaseHTTPRequestHandler.responses[e.code][0]))
+                sys.stderr.write("Data posted:\n%s\n" % data)
+                sys.exit(EXIT_FAILURE)
+
+            self.verbose("Closed ticket %s." % ticket, 3)
+
+
+    def closeTicketIfNecessary(self, summary, ticket, cookie):
+        """Iterate over the regular expressions and if the summary
+           matches, close the ticket."""
+
+        matched = False
+        self.verbose("Closing newly created ticket %s if necessary..." % ticket)
+
+        for pattern in self.reject_patterns.keys():
+            self.verbose("Checking pattern: '%s'" % pattern, 2)
+            p = re.compile(pattern)
+            m = p.match(summary)
+            if m:
+                self.closeTicket(ticket, cookie, "Matched reject pattern '%s'." % pattern)
+                break
+
+
     def createTicket(self, cve, cookie):
         """Create a new Jira ticket for the given CVE."""
 
+        ticket = None
         cve_id = cve.data["cve_id"]
+        labels = [ self.config["tag"] ]
 
         self.verbose("Creating ticket for %s..." % cve_id, 2)
 
@@ -114,9 +181,10 @@ class NVDXJIRA(object):
         description += "\n\n{noformat}\n%s\n{noformat}\n" % cve
         description += "\n\nhttps://cve.mitre.org/cgi-bin/cvename.cgi?name=%s\n" % cve_id
 
-	summary = cve_id
-	if cve.data["score"]:
-		summary += " (CVSS: %s)" % cve.data["score"]
+        summary = cve_id
+        if cve.data["score"]:
+            summary += " (CVSS: %s)" % cve.data["score"]
+            labels.append("cvss-%s" % cve.data["score"])
 
         url = self.config["url"] + "/rest/api/latest/issue/"
         data = {
@@ -126,29 +194,32 @@ class NVDXJIRA(object):
                     },
                 "summary"     : summary,
                 "description" : description,
-                "labels"      : [ self.config["tag"] ],
+                "labels"      : labels,
                 "issuetype"   : { "name" : "Task" }
                 }
             }
         data = json.dumps(data).encode()
-        headers = { 'Content-Type' : 'application/json',
-                    'Accept' : 'application/json',
-                    'Cookie' : '%s=%s' % (cookie["name"], cookie["value"]) }
 
-        try:
-            req = urllib2.Request(url, data, headers)
-            res = urllib2.urlopen(req)
-        except urllib2.HTTPError, e:
-            sys.stderr.write("Unable to create ticket at '%s': %s %s\n" % \
+        if self.config["debug"]:
+            print data
+        else:
+            headers = { 'Content-Type' : 'application/json',
+                        'Accept' : 'application/json',
+                        'Cookie' : '%s=%s' % (cookie["name"], cookie["value"]) }
+
+            try:
+                req = urllib2.Request(url, data, headers)
+                res = urllib2.urlopen(req)
+            except urllib2.HTTPError, e:
+                sys.stderr.write("Unable to create ticket at '%s': %s %s\n" % \
                                 (url, e.code, BaseHTTPServer.BaseHTTPRequestHandler.responses[e.code][0]))
-            sys.stderr.write("Data posted:\n%s\n" % data)
-            sys.exit(EXIT_FAILURE)
+                sys.stderr.write("Data posted:\n%s\n" % data)
+                sys.exit(EXIT_FAILURE)
 
-        ticket = None
-        data = json.loads(res.readline())
-        if data.has_key("key"):
-            ticket = data["key"]
-            self.verbose("Successfully created ticket %s." % ticket, 3)
+            data = json.loads(res.readline())
+            if data.has_key("key"):
+                ticket = data["key"]
+                self.verbose("Successfully created ticket %s." % ticket, 3)
 
         return ticket
 
@@ -306,38 +377,66 @@ class NVDXJIRA(object):
         """
 
         try:
-            opts, args = getopt.getopt(inargs, "c:d:hj:lno:p:t:v")
+            opts, args = getopt.getopt(inargs, "Dc:d:hj:lno:p:r:t:v")
         except getopt.GetoptError:
             raise self.Usage(EXIT_FAILURE)
 
-        for o, a in opts:
-            if o in ("-c"):
-                self.setConfigOption("config", a)
-            if o in ("-d"):
-                self.setConfigOption("database", a)
-            if o in ("-h"):
+        for option, argument in opts:
+            if option in ("-D"):
+                self.setConfigOption("debug", True)
+            if option in ("-c"):
+                self.setConfigOption("config", argument)
+            if option in ("-d"):
+                self.setConfigOption("database", argument)
+            if option in ("-h"):
                 raise self.Usage(EXIT_SUCCESS)
-            if o in ("-j"):
-                self.setConfigOption("url", a)
-            if o in ("-l"):
+            if option in ("-j"):
+                self.setConfigOption("url", argument)
+            if option in ("-l"):
                 self.setConfigOption("action", "list")
-            if o in ("-n"):
+            if option in ("-n"):
                 self.setConfigOption("action", "create")
-            if o in ("-o"):
-                if a not in [ "list", "details" ]:
-                    sys.stderr.write("Invalid output format: %s\n" % a)
+            if option in ("-o"):
+                if argument not in [ "list", "details" ]:
+                    sys.stderr.write("Invalid output format: %s\n" % argument)
                     sys.stderr.write("Valid options: details, list\n")
                     sys.exit(EXIT_FAILURE)
-                self.setConfigOption("output-format", a)
-            if o in ("-p"):
-                self.setConfigOption("project", a)
-            if o in ("-t"):
-                self.setConfigOption("tag", a)
-            if o in ("-v"):
+                self.setConfigOption("output-format", argument)
+            if option in ("-p"):
+                self.setConfigOption("project", argument)
+            if option in ("-r"):
+                self.setConfigOption("reject", argument)
+            if option in ("-t"):
+                self.setConfigOption("tag", argument)
+            if option in ("-v"):
                 self.verbosity += 1
 
         if args:
             raise self.Usage(EXIT_FAILURE)
+
+
+    def parseRejectFile(self):
+        """Parse the file containing regular expressions based on which we
+           want to automatically close tickets."""
+
+        rejectFile = self.config['reject']
+        self.verbose("Parsing reject file ('%s')..." % rejectFile)
+
+        try:
+            f = open(rejectFile, 'r')
+            for line in f.readlines():
+                line = re.sub(r'^#.*', '', line).strip()
+                if line:
+                    self.reject_patterns[line.strip()] = True
+            f.close()
+
+            self.verbose("Found the following reject patterns:", 3)
+            for pattern in self.reject_patterns.keys():
+                self.verbose("'%s'" % pattern, 3)
+
+        except IOError, e:
+            sys.stderr.write("Unable to read '%s': %s\n" % (rejectFile, e.strerror))
+            sys.exit(EXIT_FAILURE)
 
 
     def printInfo(self, cve, ticket):
@@ -384,6 +483,7 @@ if __name__ == "__main__":
             nvdXjira.setDefaultUserAndPassword()
             nvdXjira.parseOptions(sys.argv[1:])
             nvdXjira.parseConfigFile()
+            nvdXjira.parseRejectFile()
 
             cookie = nvdXjira.getJiraCookie()
             new_tickets = []
@@ -398,6 +498,7 @@ if __name__ == "__main__":
                         data = " ".join(tickets)
                 elif not tickets:
                     data = nvdXjira.createTicket(cve, cookie)
+                    nvdXjira.closeTicketIfNecessary(cve.data["summary"], data, cookie)
 
                 if data:
                     nvdXjira.printInfo(cve, data)
@@ -409,7 +510,7 @@ if __name__ == "__main__":
                 out = sys.stdout
             out.write(u.msg)
             sys.exit(u.err)
-	        # NOTREACHED
+            # NOTREACHED
 
     except KeyboardInterrupt:
         # catch ^C, so we don't get a "confusing" python trace

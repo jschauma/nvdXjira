@@ -4,8 +4,8 @@ NAME
      nvdXjira -- cross-reference CVEs from the NVD with Jira
 
 SYNOPSIS
-     nvdXjira [-hlnv] [-c file] [-d dbfile] [-j url] [-o format] [-p project]
-	      [-t tag]
+     nvdXjira [-Dhlnv] [-c file] [-d dbfile] [-j url] [-o format] [-p project]
+	      [-r file] [-t tag]
 
 DESCRIPTION
      The nvdXjira utility cross-references CVEs found in a local sqlite3 copy
@@ -16,6 +16,8 @@ DESCRIPTION
 
 OPTIONS
      nvdXjira supports the following options:
+
+     -D		 Run in debug mode.  No tickets will be created.
 
      -c file	 Read configuration from this file.
 
@@ -33,6 +35,9 @@ OPTIONS
      -o format	 Specify output format.	 May be 'list' (default) or 'details'.
 
      -p project	 If -n was specified, create new tickets in this project.
+
+     -r file	 Read regular expressions from this file and immediately close
+		 any tickets where the body matches.
 
      -t tag	 If -n was specified, tag new tickets with this tag/label.
 
@@ -56,8 +61,16 @@ CONFIGURATION
      database	The pathname of the database to read input from.  Overwrite
 		using the -d flag.  Defaults to /var/db/cvedb/nvd.db.
 
+     password	The password with which to authenticate against the Jira API.
+		Overwrite using the NVDXJIRA_PASSWORD environment variable.
+		No default value.
+
      project	The Jira project under which to create new tickets.  Overwrite
 		using the -p flag.  Defaults to 'VULN'.
+
+     reject	The pathname of a file containing regular expressions based on
+		which to immediately close any tickets with a matching
+		description.  No default value.
 
      url	The base URL for Jira API access.  Overwrite using the -u
 		flag.  No default value.
@@ -68,10 +81,6 @@ CONFIGURATION
 
      tag	The tag with which to label newly created tickets.  Overwrite
 		using the -n flag.  Defaults to 'cve'.
-
-     password	The password with which to authenticate against the Jira API.
-		Overwrite using the NVDXJIRA_PASSWORD environment variable.
-		No default value.
 
 EXAMPLES
      To list all tickets for all CVEs in the database '/var/db/nvd.db'
@@ -94,4 +103,4 @@ HISTORY
      nvdXjira was originally written by Jan Schaumann
      <jschauma@netmeister.org> in April 2013.
 
-NetBSD 5.0			 May 10, 2013			    NetBSD 5.0
+NetBSD 5.0			 July 22, 2013			    NetBSD 5.0
