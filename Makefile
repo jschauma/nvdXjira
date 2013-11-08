@@ -1,9 +1,11 @@
-MANPAGES=nvdXjira.1
+NAME="nvdXjira"
+MANPAGES="${NAME}.1"
+VERSION=$(shell sed -n -e 's/version = (\([0-9]*\), \([0-9]*\), \([0-9]*\))/\1.\2.\3/p' setup.py)
 BUILDHOST=""
 
 help:
 	@echo "The following targets are available:"
-	@echo "build      build the RPM on ${BUILDHOST}"
+	@echo "build      build the RPM of ${NAME}-${VERSION} on ${BUILDHOST}"
 	@echo "clean      remove any interim files"
 	@echo "help       print this help"
 	@echo "install    install nvd2sqlite3"
@@ -11,9 +13,11 @@ help:
 	@echo "uninstall  uninstall nvd2sqlite3"
 
 build:
-	@rsync -e ssh -avz . ${BUILDHOST}:nvdXjira/.
-	@ssh ${BUILDHOST} "cd nvdXjira && make rpm"
-	@scp ${BUILDHOST}:nvdXjira/dist/*rpm /tmp/
+	@ssh ${BUILDHOST} "mkdir -p ${NAME}"
+	@rsync -e ssh -avz . ${BUILDHOST}:${NAME}/.
+	@ssh ${BUILDHOST} "cd ${NAME} && make rpm"
+	@scp ${BUILDHOST}:${NAME}/dist/${NAME}-${VERSION}*rpm /tmp/
+	@ls /tmp/${NAME}-${VERSION}*
 
 install: man-compress
 	python setup.py install
@@ -24,7 +28,7 @@ uninstall:
 	@echo "followed by 'xargs rm -f </tmp/f'"
 
 rpm: man-compress
-	python setup.py bdist_rpm --python=/usr/bin/python2.6
+	python setup.py bdist_rpm --python=/usr/bin/python2.7
 
 man-compress:
 	@for f in ${MANPAGES}; do			\

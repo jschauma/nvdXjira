@@ -1,4 +1,4 @@
-.Dd July 22, 2013
+.Dd November 05, 2013
 .Dt NVDXJIRA 1
 .Os
 .Sh NAME
@@ -6,21 +6,20 @@
 .Nd cross-reference CVEs from the NVD with Jira
 .Sh SYNOPSIS
 .Nm
-.Op Fl Dhlnv
+.Op Fl Dhuv
 .Op Fl c Ar file
-.Op Fl d Ar dbfile
 .Op Fl j Ar url
-.Op Fl o Ar format
 .Op Fl p Ar project
 .Op Fl r Ar file
+.Op Fl s Ar file
 .Op Fl t Ar tag
 .Sh DESCRIPTION
 The
 .Nm
-utility cross-references CVEs found in a local sqlite3 copy of NIST's
-National Vulerability Database with a Jira instance.
-That is, for every CVE found in the database, it will look for tickets
-containing the CVE identifier anywhere in the text.
+utility cross-references CVEs read from stdin in NIST's National
+Vulerability Database XML format with a Jira instance.
+That is, for every CVE found, it will look for tickets containing the CVE
+identifier anywhere in the text.
 For any CVEs not found in Jira,
 .Nm
 can create a new ticket.
@@ -33,48 +32,68 @@ Run in debug mode.
 No tickets will be created.
 .It Fl c Ar file
 Read configuration from this file.
-.It Fl d Ar dbfile
-Read input from the given database file.
 .It Fl h
 Print a short usage statement and exit.
 .It Fl j Ar url
 Specify the base URL for Jira.
-.It Fl l
-List Jira tickets with their respective CVEs.
-This is the default mode.
-.It Fl n
-Create new tickets for CVEs not found in Jira.
-.It Fl o Ar format
-Specify output format.
-May be 'list' (default) or 'details'.
 .It Fl p Ar project
-If
-.Fl n
-was specified, create new tickets in this project.
+Create new tickets in this project.
 .It Fl r Ar file
 Read regular expressions from this file and immediately close any tickets
 where the body matches.
+.It Fl s Ar file
+Read actions and patterns to apply to tickets with matching vulnerable
+software list from this file.
 .It Fl t Ar tag
-If
-.Fl n
-was specified, tag new tickets with this tag/label.
+Tag new tickets with this tag/label.
+.It Fl u
+Update existing tickets only.
+If this flag is given,
+.Nm
+will not read any input data and only act on existing tickets in Jira.
+It may apply software actions, assign the ticket for triaging or nag the
+current owner.
 .It Fl v
 Be verbose.
 Can be specified multiple times.
 .El
 .Sh DETAILS
 .Nm
-operates on an sqlite3 copy of NIST's National Vulnerability Database,
-created using the
-.Xr nvd2sqlite3 1
-utility.
-It will loop over all entries in the database, and, for each CVE found,
-query Jira for any tickets containing the CVE identifier in its text, and
-either print the ticket to CVE mappings (default) or create a new ticket
-for the CVE.
+operates on XML data describing CVEs in NIST's National Vulnerability
+Database.
+The data is read from stdin.
+.Nm
+will loop over all entries in the input and query Jira for any tickets
+containing the CVE identifier in its text and, if no tickets are found,
+create a new ticket for the CVE.
 .Pp
 New tickets are, by default, created under the 'VULN' project, and tagged
 with the 'cve' label.
+.Pp
+If the
+.Fl u
+option is provided,
+.Nm
+will query Jira for all unassigned, open tickets and update them according
+to the given software actions.
+.Pp
+.Sh AUTOMATIC ACTIONS
+.Nm
+can read a list of actions and patterns from the file specified via the
+.Fl s
+flag.
+That file should contain lines with two whitespace separated fields
+containing as the first field an 'action' to perform against tickets with
+a 'vulnerable software list' field matching following regular expression.
+.Pp
+\'actions' may be:
+.Bl -tag -width assign_user_
+.It assign:user
+Assign the given ticket to the specified user.
+.It cancel
+Close the given ticket.
+This is commonly used if the given software is known not to be in use.
+.El
 .Sh CONFIGURATION
 By default,
 .Nm
@@ -82,14 +101,18 @@ reads its configuration from the file
 .Ar /etc/nvdXjira
 (if it exists).
 In this file, you can specify the following keyword=value pairs:
-.Bl -tag -width password_
-.It database
-The pathname of the database to read input from.
-Overwrite using the
-.Fl d
-flag.
-Defaults to
-.Ar /var/db/cvedb/nvd.db .
+.Bl -tag -width assign-threshold_
+.It assign-threshold
+The number of seconds after which a ticket is assigned to a member of the
+\'triage-group\'.
+Defaults to 86400 (24h).
+.It cve-threshold
+The number of seconds after which a CVE is consider too old to bother.
+Defaults to 4838400 (8w).
+.It nag-threshold
+The number of seconds after which a ticket is updated with a comment,
+suggesting further attention.
+Defaults to 1209600 (2w).
 .It password
 The password with which to authenticate against the Jira API.
 Overwrite using the
@@ -105,7 +128,15 @@ Defaults to 'VULN'.
 .It reject
 The pathname of a file containing regular expressions based on which to
 immediately close any tickets with a matching description.
-No default value.
+Defaults to '/etc/nvdXjira/reject-patterns'.
+.It swactions
+The pathname of a file containing regular expressions based on which to
+assign or cancel tickets.
+Defaults to '/etc/nvdXjira/software-actions'.
+.It triage-group
+The name of the Unix group containing users to whom tickets
+should be assigned.
+Defaults to 'cve-ticket-handlers'.
 .It url
 The base URL for Jira API access.
 Overwrite using the
@@ -122,31 +153,30 @@ Defaults to
 .It tag
 The tag with which to label newly created tickets.
 Overwrite using the
-.Fl n
+.Fl t
 flag.
 Defaults to 'cve'.
 .El
 .Sh EXAMPLES
-To list all tickets for all CVEs in the database '/var/db/nvd.db'
-.Bd -literal -offset indent
-nvdXjira -d /var/db/nvd.db
-.Ed
-.Pp
-To create new tickets for any CVEs found in the database but not yet in
-Jira, using the 'security' project and tagging each ticket using the 'nvd'
+To create new tickets for any CVEs found in the most recent data from NIST
+using the 'security' project and tagging each ticket using the 'nvd'
 label:
 .Bd -literal -offset indent
-nvdXjira -n -d /var/db/cve.db -p security -t nvd
+curl https://nvd.nist.gov/static/feeds/xml/cve/nvdcve-2.0-recent.xml |  \\
+        nvdXjira -p security -t nvd
+.Ed
+.Pp
+To very verbosely update existing tickets without consuming CVE data:
+.Bd -literal -offset indent
+nvdXjira -u -v -v -v -v
 .Ed
 .Sh EXIT STATUS
 .Ex -std
 .Sh SEE ALSO
-.Xr nvd2sqlite3 1 ,
-.Xr sqlite3 1 ,
 .Xr yvc 1
 .Sh HISTORY
 .Nm
 was originally written by
 .An Jan Schaumann
-.Aq jschauma@netmeister.org
+.Aq jschauma@twitter.com
 in April 2013.

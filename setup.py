@@ -1,9 +1,9 @@
 #!/usr/bin/env python
 
-version = (0, 0, 6)
+version = (0, 2, 1)
 __version__ = '.'.join([str(b) for b in version])
 __author__ = 'Jan Schaumann'
-__email__ = 'jschauma@netmeister.org'
+__email__ = 'jschauma@twitter.com'
 
 from distutils.core import setup
 
@@ -16,5 +16,5 @@ setup(
   url='https://github.com/jschauma/nvdXjira',
   scripts = ['src/nvdXjira'],
   data_files = [ ('man/man1', [ 'doc/nvdXjira.1.gz' ]),
-                 ('/etc/nvdXjira', [ 'conf/reject-patterns' ]) ]
+                 ('/etc/nvdXjira', [ 'conf/reject-patterns', 'conf/software-actions' ]) ]
   )

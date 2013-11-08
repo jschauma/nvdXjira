@@ -1,3 +1,49 @@
+2013-11-05: Version 0.2.1
+- minor bug fix
+
+2013-11-05: Version 0.2.0
+- [SECURITY-10370]: assign unassigned tickets to members of the
+  'cve-ticket-handlers' group
+- [SECURITY-10369]: nag unresolved tickets every 2 weeks
+- [SECURITY-10379]: ignore "ancient" tickets
+- [SECURITY-10404]: add '-u' mode to update existing tickets
+- only print data in debug mode
+
+2013-10-30: Version 0.1.3
+- close tickets only if they're open
+
+2013-10-30: Version 0.1.2
+- [SECURITY-10366]: take software actions _after_ updating any tickets
+
+2013-10-29: Version 0.1.1
+- syntax error fixes
+
+2013-10-28: Version 0.1.0
+- [SECURITY-10345] read input from XML directly, dropping the use of
+  a database or nvd2sqlite3
+
+2013-10-27: Version 0.0.11
+- object functions need 'self'
+
+2013-10-26: Version 0.0.10
+- syntax error fixes
+
+2013-10-26: Version 0.0.9
+- [SECURITY-9225]: update existing tickets with additional information
+
+2013-10-24: Version 0.0.8
+- Instead of searching jira for every single CVE, store in the DB the
+  ticket number(s) and only search Jira for tickets of vulnerabilities for
+  which we do not already have a ticket.
+- [SECURITY-9526]: fix URL in output
+- fix tyop in cancel message
+
+2013-08-07: Version 0.0.7
+- [SECURITY-9503]: allow assignment/cancelling of tickets based on
+  vulnerable software
+  This is done by parsing a file containing 'actions' mapped to regular
+  expressions to be matched against the vulnerable software list.
+
 2013-07-22: Version 0.0.6
 - [SECURITY-9270]: ignore rejected CVEs
   This is done by adding logic to parse a 'reject' file containing regular
