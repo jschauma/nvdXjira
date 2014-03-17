@@ -4,15 +4,15 @@ NAME
      nvdXjira -- cross-reference CVEs from the NVD with Jira
 
 SYNOPSIS
-     nvdXjira [-Dhlnv] [-c file] [-d dbfile] [-j url] [-o format] [-p project]
-	      [-r file] [-t tag]
+     nvdXjira [-Dhv] [-c file] [-j url] [-l file] [-p project] [-r file]
+	      [-s file] [-t tag] [-u [tickets]]
 
 DESCRIPTION
-     The nvdXjira utility cross-references CVEs found in a local sqlite3 copy
-     of NIST's National Vulerability Database with a Jira instance.  That is,
-     for every CVE found in the database, it will look for tickets containing
-     the CVE identifier anywhere in the text.  For any CVEs not found in Jira,
-     nvdXjira can create a new ticket.
+     The nvdXjira utility cross-references CVEs read from stdin in NIST's
+     National Vulerability Database XML format with a Jira instance.  That is,
+     for every CVE found, it will look for tickets containing the CVE identi-
+     fier anywhere in the text.	 For any CVEs not found in Jira, nvdXjira can
+     create a new ticket.
 
 OPTIONS
      nvdXjira supports the following options:
@@ -21,86 +21,151 @@ OPTIONS
 
      -c file	 Read configuration from this file.
 
-     -d dbfile	 Read input from the given database file.
-
      -h		 Print a short usage statement and exit.
 
      -j url	 Specify the base URL for Jira.
 
-     -l		 List Jira tickets with their respective CVEs.	This is the
-		 default mode.
+     -l file	 Read actions and patterns to apply to tickets with matching
+		 labels from this file.
 
-     -n		 Create new tickets for CVEs not found in Jira.
-
-     -o format	 Specify output format.	 May be 'list' (default) or 'details'.
-
-     -p project	 If -n was specified, create new tickets in this project.
+     -p project	 Create new tickets in this project.
 
      -r file	 Read regular expressions from this file and immediately close
 		 any tickets where the body matches.
 
-     -t tag	 If -n was specified, tag new tickets with this tag/label.
+     -s file	 Read actions and patterns to apply to tickets with matching
+		 vulnerable software list from this file.
+
+     -t tag	 Tag new tickets with this tag/label.
+
+     -u		 Update existing tickets only.	If this flag is given,
+		 nvdXjira will not read any input data and only act on exist-
+		 ing tickets in Jira.  It may apply software actions, assign
+		 the ticket for triaging or nag the current owner.
+
+		 If any ticket names are given as arguments, nvdXjira will
+		 only update those tickets.
 
      -v		 Be verbose.  Can be specified multiple times.
 
 DETAILS
-     nvdXjira operates on an sqlite3 copy of NIST's National Vulnerability
-     Database, created using the nvd2sqlite3(1) utility.  It will loop over
-     all entries in the database, and, for each CVE found, query Jira for any
-     tickets containing the CVE identifier in its text, and either print the
-     ticket to CVE mappings (default) or create a new ticket for the CVE.
+     nvdXjira operates on XML data describing CVEs in NIST's National Vulnera-
+     bility Database.  The data is read from stdin.  nvdXjira will loop over
+     all entries in the input and query Jira for any tickets containing the
+     CVE identifier in its text and, if no tickets are found, create a new
+     ticket for the CVE.
 
      New tickets are, by default, created under the 'VULN' project, and tagged
      with the 'cve' label.
+
+     If the -u option is provided, nvdXjira will query Jira for all unas-
+     signed, open tickets and update them according to the given software
+     actions.
+
+     Any tickets mentioning a CVE will be linked to the respective ticket as
+     "related", unless another link already exists.
+
+AUTOMATIC ACTIONS
+     nvdXjira can read a list of actions and patterns from the file specified
+     via the -s flag.  That file should contain lines with two whitespace sep-
+     arated fields containing as the first field an 'action' to perform
+     against tickets with a 'vulnerable software list' field matching the reg-
+     ular expression in the second field.  An optional third field can be pro-
+     vided to add as a comment when the given action is applied.
+
+     'actions' may be:
+
+     assign:user	Assign the given ticket to the specified user.
+
+     blocker:project	Create a blocker ticket in the given project.
+
+     cancel		Close the given ticket.	 This is commonly used if the
+			given software is known not to be in use.
+
+     mail:user1,user2	Send an email to user1 and user2 with information
+			about this ticket.
+
+     watch:user1,user2	Add user1 and user2 to the list of watchers.
+
+     Similarly, actions may be defined for matching jira labels found in the
+     file specified via the -l flag.  The syntax for the file is the same as
+     above (ie two whitespace separated fields, defining actions and regular
+     expressions matched against each label).  The supported actions for this
+     file are:
+
+     mail:user1,user2	Send an email to user1 and user2 with information
+			about this ticket.
 
 CONFIGURATION
      By default, nvdXjira reads its configuration from the file /etc/nvdXjira
      (if it exists).  In this file, you can specify the following key-
      word=value pairs:
 
-     database	The pathname of the database to read input from.  Overwrite
-		using the -d flag.  Defaults to /var/db/cvedb/nvd.db.
+     assign-threshold	The number of seconds after which a ticket is assigned
+			to a member of the 'triage-group'.  Defaults to 86400
+			(24h).
 
-     password	The password with which to authenticate against the Jira API.
-		Overwrite using the NVDXJIRA_PASSWORD environment variable.
-		No default value.
+     cve-threshold	The number of seconds after which a CVE is consider
+			too old to bother.  Defaults to 4838400 (8w).
 
-     project	The Jira project under which to create new tickets.  Overwrite
-		using the -p flag.  Defaults to 'VULN'.
+     nag-threshold	The number of seconds after which a ticket is updated
+			with a comment, suggesting further attention.
+			Defaults to 1209600 (2w).
 
-     reject	The pathname of a file containing regular expressions based on
-		which to immediately close any tickets with a matching
-		description.  No default value.
+     password		The password with which to authenticate against the
+			Jira API.  Overwrite using the NVDXJIRA_PASSWORD envi-
+			ronment variable.  No default value.
 
-     url	The base URL for Jira API access.  Overwrite using the -u
-		flag.  No default value.
+     project		The Jira project under which to create new tickets.
+			Overwrite using the -p flag.  Defaults to 'VULN'.
 
-     username	The username to authenticate as against the Jira API.  Over-
-		write using the NVDXJIRA_USER environment variable.  Defaults
-		to USER.
+     reject		The pathname of a file containing regular expressions
+			based on which to immediately close any tickets with a
+			matching description.  Defaults to
+			'/etc/nvdXjira/reject-patterns'.
 
-     tag	The tag with which to label newly created tickets.  Overwrite
-		using the -n flag.  Defaults to 'cve'.
+     swactions		The pathname of a file containing regular expressions
+			based on which to assign or cancel tickets.  Defaults
+			to '/etc/nvdXjira/software-actions'.
+
+     triage-group	The name of the Unix group containing users to whom
+			tickets should be assigned.  Defaults to 'cve-ticket-
+			handlers'.
+
+     url		The base URL for Jira API access.  Overwrite using the
+			-u flag.  No default value.
+
+     username		The username to authenticate as against the Jira API.
+			Overwrite using the NVDXJIRA_USER environment vari-
+			able.  Defaults to USER.
+
+     tag		The tag with which to label newly created tickets.
+			Overwrite using the -t flag.  Defaults to 'cve'.
 
 EXAMPLES
-     To list all tickets for all CVEs in the database '/var/db/nvd.db'
+     To create new tickets for any CVEs found in the most recent data from
+     NIST using the 'security' project and tagging each ticket using the 'nvd'
+     label:
 
-	   nvdXjira -d /var/db/nvd.db
+	   curl https://nvd.nist.gov/static/feeds/xml/cve/nvdcve-2.0-recent.xml |  \
+		   nvdXjira -p security -t nvd
 
-     To create new tickets for any CVEs found in the database but not yet in
-     Jira, using the 'security' project and tagging each ticket using the
-     'nvd' label:
+     To very verbosely update existing tickets without consuming CVE data:
 
-	   nvdXjira -n -d /var/db/cve.db -p security -t nvd
+	   nvdXjira -u -v -v -v -v
+
+     To only update the existing tickets FOO-123 and BAR-99:
+
+	   nvdXjira -u FOO-123 BAR-99
 
 EXIT STATUS
      The nvdXjira utility exits 0 on success, and >0 if an error occurs.
 
 SEE ALSO
-     nvd2sqlite3(1), sqlite3(1), yvc(1)
+     yvc(1)
 
 HISTORY
-     nvdXjira was originally written by Jan Schaumann
-     <jschauma@netmeister.org> in April 2013.
+     nvdXjira was originally written by Jan Schaumann <jschauma@twitter.com>
+     in April 2013.
 
-NetBSD 5.0			 July 22, 2013			    NetBSD 5.0
+NetBSD 5.0			March 14, 2014			    NetBSD 5.0

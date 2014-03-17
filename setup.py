@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-version = (0, 2, 1)
+version = (0, 8, 4)
 __version__ = '.'.join([str(b) for b in version])
 __author__ = 'Jan Schaumann'
 __email__ = 'jschauma@twitter.com'
@@ -16,5 +16,7 @@ setup(
   url='https://github.com/jschauma/nvdXjira',
   scripts = ['src/nvdXjira'],
   data_files = [ ('man/man1', [ 'doc/nvdXjira.1.gz' ]),
-                 ('/etc/nvdXjira', [ 'conf/reject-patterns', 'conf/software-actions' ]) ]
+                 ('/etc/nvdXjira', [ 'conf/label-actions',
+                                        'conf/reject-patterns',
+                                        'conf/software-actions' ]) ]
   )

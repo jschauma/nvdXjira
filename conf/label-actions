@@ -1,0 +1,4 @@
+# In this file you can specify actions to be taken based on regular
+# expressions matching the labels of a ticket.
+# The supported actions are:
+#   mail:<recipients>

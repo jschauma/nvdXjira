@@ -1,3 +1,53 @@
+
+- only print debugging output when we're debugging
+
+2014-03-06: Version 0.8.4
+- bugfix: newly created tickets don't have all the data we need, so fetch
+  it to process further
+
+2014-03-06: Version 0.8.3
+- bugfix: use ticket key when creating links
+
+2014-03-05: Version 0.8.2
+- don't send mail for tickets we already sent mail
+
+2014-03-05: Version 0.8.1
+- reduce number of jira queries performed
+- allow 'blocker' action for labels
+
+2014-03-05: Version 0.8.0
+- [SECURITY-11202]: add 'blocker' action to allow individual blocking
+  tickets to be created for a given vulnerability
+
+2014-02-19: Version 0.7.1
+- remove debugging statement
+
+2014-02-19: Version 0.7.0
+- [SECURITY-11449]: add 'watch' action
+- handle invalid actions correctly
+
+2014-01-16: Version 0.6.0
+- [SECURITY-11105]: only consider existing VULN tickets; link others as
+  related
+- allow '-u' to only update given tickets
+
+2013-12-17: Version 0.5.0
+- [SECURITY-10837]: allow actions based on labels
+
+2013-12-09: Version 0.4.2
+- try not to spam email lists
+
+2013-12-09: Version 0.4.1
+- [SECURITY-10738]: match more than one cancel-action
+
+2013-12-04: Version 0.4.0
+- [SECURITY-10372]: allow a comment when specifying software actions
+- [SECURITY-10374]: add support for 'mail:recipients' actions
+
+2013-12-03: Version 0.3.0
+- [SECURITY-10412]: don't cancel tickets quite so aggressively
+- ensure the list of vulnerable software is actually a list
+
 2013-11-05: Version 0.2.1
 - minor bug fix
 

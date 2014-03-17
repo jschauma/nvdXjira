@@ -1,3 +1,4 @@
+conf/label-actions
 conf/reject-patterns
 conf/software-actions
 setup.py

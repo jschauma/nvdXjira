@@ -16,6 +16,7 @@ import json
 import os
 import random
 import re
+import smtplib
 import sys
 import urllib
 import urllib2
@@ -23,10 +24,23 @@ import xml
 
 import xml.etree.ElementTree as ET
 
-SUPPORTED_SWACTIONS = {
-    "assign:"       : True,
-    "cancel"        : True
+from email.mime.text import MIMEText
+
+SUPPORTED_ACTIONS = {
+    "label-actions" : {
+        "blocker"      : True,
+        "mail"         : True
+    },
+    "swactions" : {
+        "assign"       : True,
+        "blocker"      : True,
+        "cancel"       : True,
+        "mail"         : True,
+        "watch"        : True
+    }
 }
+
+TICKETS = []
 
 DEFAULTS = {
     "apiurl"           : "/rest/api/latest/",
@@ -34,6 +48,7 @@ DEFAULTS = {
     "config"           : "/etc/nvdXjira/config",
     "cve-threshold"    : 8 * 7 * 24 * 60 * 60,  # 8w in seconds
     "debug"            : False,
+    "label-actions"    : "/etc/nvdXjira/label-actions",
     "nag-threshold"    : 2 * 7 * 24 * 60 * 60,  # 2w in seconds
     "password"         : "",
     "project"          : "VULN",
@@ -42,7 +57,7 @@ DEFAULTS = {
     "tag"              : "cve",
     "triage-group"     : "cve-ticket-handlers",
     "update"           : False,
-    "url"              : "",
+    "url"              : "https://jira.twitter.biz",
     "username"         : ""
 }
 
@@ -102,8 +117,11 @@ class NVDXJIRA(object):
         """Construct a NVDXJIRA with default values."""
         self.config = DEFAULTS
         self.frobbed = dict((x, False) for x in self.config.keys())
+        self.actions = {
+            "label-actions" : {},
+            "swactions"     : {}
+        }
         self.reject_patterns = {}
-        self.swactions = {}
         self.verbosity = 0
 
 
@@ -113,44 +131,187 @@ class NVDXJIRA(object):
 
         def __init__(self, rval):
             self.err = rval
-            self.msg = 'Usage: %s [-hv] [-c file]' % os.path.basename(sys.argv[0])
+            self.msg = 'Usage: %s [-Dhuv] [[-cls] file]' % os.path.basename(sys.argv[0])
             self.msg += ' [-j url] [-p project] [-t tag]\n'
+            self.msg += '\t-D          run in debug mode, no tickets are created/updated\n'
             self.msg += '\t-c file     read configuration from this file\n'
             self.msg += '\t-h          print this message and exit\n'
             self.msg += '\t-j url      jira base URL\n'
+            self.msg += '\t-l file     read label actions from this file\n'
             self.msg += '\t-p project  jira project to create tickets in\n'
             self.msg += '\t-r file     read regular expressions to auto-close tickets from this file\n'
             self.msg += '\t-s file     read actions for software matching patterns from this file\n'
             self.msg += '\t-t tag      label to tag new tickets with\n'
+            self.msg += '\t-u          update existing tickets only\n'
             self.msg += '\t-v          increase verbosity\n'
 
 
-    def applySoftwareActions(self, swlist, ticket, jira_data, cookie):
+    def addCommentToTicket(self, comment, ticket, cookie):
+        """Add a comment to the ticket."""
+        url = self.config["url"] + self.config["apiurl"] + "issue/" + ticket
+
+        self.verbose("Adding the following comment to ticket '%s'..." % ticket, 3)
+        self.verbose(comment, 3)
+        data = {
+                "update" : {
+                    "comment" : [
+                        {
+                            "add": {
+                                "body": comment
+                            }
+                        }
+                    ]
+                }
+        }
+        self.jiraRequest(url, data, cookie, "PUT")
+
+
+    def addWatchers(self, ticket, watchers, cookie, reason="N/A"):
+        """Add watchers to the given ticket."""
+
+        self.verbose("Adding watchers (%s) to ticket %s..." % (ticket, watchers))
+        self.verbose("Getting current watchers for ticket '%s'..." % ticket, 2)
+
+        url = self.config["url"] + self.config["apiurl"] + "issue/" + ticket + "/watchers"
+        res = self.jiraRequest(url, None, cookie, "GET")
+        if not res:
+            sys.stderr.write("No data returned from %s.\n" % url)
+            return
+
+        ticket_watchers = []
+        data = json.loads(res.readline())
+        if data.has_key("watchers"):
+            ticket_watchers = map(lambda(x): x["name"], data["watchers"])
+
+        for current_watcher in ticket_watchers:
+            if current_watcher in watchers:
+                self.verbose("%s already watching %s." % (current_watcher, ticket), 3)
+                watchers.remove(current_watcher)
+
+        for watcher in watchers:
+            self.jiraRequest(url, watcher, cookie, "POST")
+            self.verbose("Added watcher (%s) to ticket %s." % (watcher, ticket), 3)
+
+
+    def applyLabelActions(self, jira_data, cookie):
+        """Iterate over the regular expressions and label actions and
+           perform the requested actions if any of the labels on this
+           ticket match.
+        """
+
+        ticket = jira_data["key"]
+        self.verbose("Applying label actions to ticket %s..." % ticket, 2)
+
+        blockers = {}
+
+        for label in jira_data["fields"]["labels"]:
+            self.verbose("Checking label %s..." % label, 3)
+            for a in self.actions["label-actions"].keys():
+                pattern = re.compile(a.pattern)
+                self.verbose("Checking if %s matches %s..." % (label, a.pattern), 4)
+                if pattern.match(label):
+                    self.verbose("%s matched %s." % (label, a.pattern), 4)
+
+                    if a.action.startswith("blocker:"):
+                        if blockers.has_key(a.pattern):
+                            continue
+                        blockers[a.pattern] = True
+                        project = a.action[a.action.find(':') + 1:]
+                        self.createBlocker(jira_data, project, cookie)
+
+                    elif a.action.startswith("mail:"):
+                        recipient = a.action[a.action.find(':') + 1:]
+                        if not self.mailSent(jira_data, recipient):
+                            self.sendMail(a.pattern, recipient, jira_data, cookie)
+
+
+
+    def applySoftwareActions(self, swlist, jira_data, cookie):
         """Iterate over the regular expressions and software actions and
            close/update the ticket the vulnerable software list matches the
-           action pattern."""
+           action pattern.
+
+           This process isn't quite as straightforward as one would like:
+           A given CVE may apply to a number of different pieces of
+           software.  We do not want to close the ticket just because one
+           of the various vulnerable software versions is found.  Instead,
+           we only cancel a ticket if _all_ of the vulnerable software
+           versions match the given cancel pattern.
+        """
+
+        assert(type(swlist) == list)
+
+        ticket = jira_data["key"]
 
         self.verbose("Applying software actions to ticket %s..." % ticket, 2)
-        closed = False
-        for pair in self.swactions.keys():
-            action = pair[0]
-            pattern = pair[1]
-            self.verbose("Checking swaction ('%s', '%s')..." % (action, pattern), 3)
-            p = re.compile(pattern)
-            for vulnerable_software in swlist:
-                if closed:
-                    break
-                m = p.match(vulnerable_software)
-                if m:
-                    if action.startswith("assign:"):
-                        if not jira_data["fields"]["assignee"]:
-                            assignee = action[action.find(':') + 1:]
-                            self.assignTicket(ticket, assignee, cookie, "Default assignee for vulnerable software matching '%s'." % pattern)
-                            break
-                    elif action == "cancel":
-                        self.closeTicket(ticket, cookie, "Affected software matched cancel pattern '%s'." % pattern)
-                        closed = True
+
+        if not len(swlist):
+            self.verbose("No software list found.", 3)
+            return
+
+        comments = {}
+        matching = 0
+        blockers = {}
+        continue_checking = True
+
+        for vulnerable_software in swlist:
+            self.verbose("Checking listed software '%s'..." % vulnerable_software, 3)
+
+            if not continue_checking:
+                break
+
+            for s in self.actions["swactions"].keys():
+                p = re.compile(s.pattern)
+                self.verbose("Checking if '%s' matches '%s'..." % (s.pattern, vulnerable_software), 4)
+                if p.match(vulnerable_software):
+                    self.verbose("Affected software matched pattern '%s'." % s.pattern, 4)
+                    if s.action == "cancel":
+                        matching += 1
+                        comments[s.pattern] = True
+                        if s.comment:
+                            comments[s.comment] = True
+                        # we can only cancel once; no other actions take
+                        # place once we cancelled
                         break
+
+                    elif s.action.startswith("assign:"):
+                        if not jira_data["fields"]["assignee"]:
+                            comment = "Default assignee for vulnerable software matching '%s'." % s.pattern
+                            if s.comment:
+                                comment = s.comment
+                            assignee = s.action[s.action.find(':') + 1:]
+                            self.assignTicket(ticket, assignee, cookie, comment)
+                            continue_checking = False
+                            # we can only assign once; first entry wins
+                            break
+
+                    elif s.action.startswith("blocker:"):
+                        if blockers.has_key(s.pattern):
+                            continue
+                        blockers[s.pattern] = True
+                        project = s.action[s.action.find(':') + 1:]
+                        self.createBlocker(jira_data, project, cookie)
+
+                    elif s.action.startswith("mail:"):
+                        recipient = s.action[s.action.find(':') + 1:]
+                        if not self.mailSent(jira_data, recipient):
+                            self.sendMail(s.pattern, recipient, jira_data, cookie)
+                            continue_checking = False
+
+                    elif s.action.startswith("watch:"):
+                            comment = "Adding watchers per software pattern '%s'." % s.pattern
+                            if s.comment:
+                                comment = s.comment
+                            watchers = s.action[s.action.find(':') + 1:].split(",")
+                            self.addWatchers(ticket, watchers, cookie, comment)
+                            continue_checking = False
+
+
+        if matching == len(swlist):
+            comment = "All affected software found in cancel patterns.\n"
+            comment += "\n"
+            comment += "\n".join(comments.keys())
+            self.closeTicket(ticket, cookie, comment)
 
 
     def assignTicket(self, ticket, assignee, cookie, reason="N/A"):
@@ -223,6 +384,44 @@ class NVDXJIRA(object):
         self.verbose("Closed ticket %s." % ticket, 3)
 
 
+    def createBlocker(self, jira_data, project, cookie):
+        """Create a blocker ticket in the given project."""
+
+        ticket = jira_data["key"]
+        cve_pattern = re.compile("(?P<cve_id>CVE-[0-9]+-[0-9]+)")
+        cve_id = ""
+        m = cve_pattern.search(jira_data["fields"]["summary"])
+        if m:
+            cve_id = m.group("cve_id")
+
+        summary = "Please investigate %s (%s)" % (cve_id, ticket)
+
+        self.verbose("Checking for existing blocker tickets in %s for CVE %s..." % (project, cve_id), 2)
+        for link in jira_data["fields"]["issuelinks"]:
+            key = ""
+            if link["type"]["name"] == "Blocker" and link.has_key("inwardIssue") and \
+                link["inwardIssue"]["key"].startswith("%s-" % project) and \
+                link["inwardIssue"]["fields"]["summary"].startswith(summary):
+                self.verbose("%s already blocked by %s." % (ticket, link["inwardIssue"]["key"]), 2)
+                return
+
+        self.verbose("Creating blocker ticket in %s for CVE %s..." % (project, cve_id), 2)
+
+        description = summary
+        description += "\n\n%s\n" % jira_data["fields"]["description"]
+
+        blocker = self.createTicket(project, summary, description, [ self.config["tag"] ], cookie)
+
+        self.verbose("Linking new ticket %s as a blocker for %s..." % (blocker["key"], ticket), 3)
+        url = self.config["url"] + self.config["apiurl"] + "issueLink"
+        data = {
+            "type" : { "name": "Blocker" },
+            "inwardIssue" : { "key" : blocker["key"] },
+            "outwardIssue" : { "key" : ticket }
+        }
+        self.jiraRequest(url, data, cookie, "POST")
+
+
     def createOrUpdateTickets(self, cookie):
         """Parse the input and create new or update existing tickets from
            that data."""
@@ -236,50 +435,46 @@ class NVDXJIRA(object):
                 continue
 
             print_data = ""
-            tickets = self.getTickets("text~%s" % cve_id, cookie)
+            tickets = self.getTickets("project=%s%%20AND%%20summary~%s&fields=*all" % \
+                                           (self.config["project"], cve_id), cookie)
 
             if not tickets:
-                ticket_number = self.createTicket(cve, cookie)
-                print_data = ticket_number
-                tickets = [ ticket_number ]
+                labels = [ self.config["tag"] ]
+                description = cve.data["summary"]
+                description += "\n\n{noformat}\n%s\n{noformat}\n" % cve
+                description += "\n\nhttps://cve.mitre.org/cgi-bin/cvename.cgi?name=%s\n" % cve_id
+                summary = cve_id
+                if cve.data["score"]:
+                    summary += " (CVSS: %s)" % cve.data["score"]
+                    labels.append("cvss-%s" % cve.data["score"])
+
+                ticket = self.createTicket(self.config["project"], summary, description, labels, cookie)
+                if not self.config["debug"]:
+                    print_data = ticket["key"]
+                    tickets = [ ticket ]
 
             for ticket in tickets:
-                # For now we only update our own tickets.
-                if self.config["project"] not in ticket:
-                    self.verbose("Not updating non-%s ticket %s for %s." %
-                                     (self.config["project"], ticket, cve.data["id"]), 2)
-                    continue
                 self.updateTicket(cve, ticket, cookie)
+                self.linkExistingTickets(ticket["key"], cve_id, cookie)
 
             if self.config["debug"] and print_data:
                 self.printInfo(cve, print_data)
 
 
-
-    def createTicket(self, cve, cookie):
-        """Create a new Jira ticket for the given CVE, returns ticket
-           number."""
+    def createTicket(self, project, summary, description, labels, cookie):
+        """Create a new Jira ticket with the given data."""
 
         ticket = ""
-        cve_id = cve.data["id"]
-        labels = [ self.config["tag"] ]
+        self.verbose("Creating ticket: %s..." % summary, 2)
 
-        self.verbose("Creating ticket for %s..." % cve_id, 2)
-
-        description = cve.data["summary"]
-        description += "\n\n{noformat}\n%s\n{noformat}\n" % cve
-        description += "\n\nhttps://cve.mitre.org/cgi-bin/cvename.cgi?name=%s\n" % cve_id
-
-        summary = cve_id
-        if cve.data["score"]:
-            summary += " (CVSS: %s)" % cve.data["score"]
-            labels.append("cvss-%s" % cve.data["score"])
+        if self.config["debug"]:
+            sys.stderr.write("%s\n%s\n%s\n%s\n" % ( project, summary, description, labels))
 
         url = self.config["url"] + self.config["apiurl"] + "issue/"
         data = {
             "fields" : {
                 "project"     : {
-                    "key"     : "%s" % self.config["project"]
+                    "key"     : "%s" % project
                     },
                 "summary"     : summary,
                 "description" : description,
@@ -291,10 +486,9 @@ class NVDXJIRA(object):
         if not self.config["debug"]:
             data = json.loads(res.readline())
             if data.has_key("key"):
-                ticket = data["key"]
-                self.verbose("Successfully created ticket %s." % ticket, 3)
+                self.verbose("Successfully created ticket %s." % data["key"], 3)
 
-        return ticket
+        return data
 
 
     def getCVEs(self):
@@ -384,7 +578,6 @@ class NVDXJIRA(object):
 
         self.verbose("Getting list of vulnerable software from Jira data...", 3)
 
-        sw = ""
         swpattern = re.compile("\nvulnerable[_-]software[_-]list\s*: (?P<sw>.+?)\n")
         desc = jira_data["fields"]["description"]
 
@@ -392,17 +585,17 @@ class NVDXJIRA(object):
         if m:
             sw = m.group("sw")
             self.verbose("Found vulnerable software: %s." % sw, 4)
-            return sw
+            return sw.split(",")
 
-        if jira_data["fields"]["comment"]:
+        if jira_data["fields"].has_key("comment"):
             for comment in jira_data["fields"]["comment"]["comments"]:
                 m = swpattern.search(comment["body"])
                 if m:
                     sw = m.group("sw")
                     self.verbose("Found vulnerable software: %s." % sw, 4)
-                    return sw
+                    return sw.split(",")
 
-        return sw
+        return []
 
 
     def getTicketData(self, ticket, cookie):
@@ -423,7 +616,7 @@ class NVDXJIRA(object):
         """Query Jira for all tickets mentioning this CVE and return them."""
 
         self.verbose("Searching Jira tickets with query '%s'..." % query, 2)
-        tickets = []
+        ticket_keys = []
 
         url = self.config["url"] + self.config["apiurl"] + "search?jql=%s" % query
         self.verbose("Searching Jira tickets using %s..." % url, 3)
@@ -441,10 +634,10 @@ class NVDXJIRA(object):
 
         data = json.loads(res.readline())
         for t in data["issues"]:
-            tickets.append(t["key"])
+            ticket_keys.append(t["key"])
 
-        self.verbose("Returning the following tickets: %s" % ", ".join(tickets))
-        return tickets
+        self.verbose("Returning the following %d tickets: %s" % (len(ticket_keys), ", ".join(ticket_keys)), 2)
+        return data["issues"]
 
 
     def jiraRequest(self, url, data, cookie, method="POST"):
@@ -472,6 +665,7 @@ class NVDXJIRA(object):
                     req.get_method = lambda: method
                 res = urllib2.urlopen(req)
             except urllib2.HTTPError, e:
+                # XXX: data = json.loads(res.readline())
                 sys.stderr.write("Unable to make Jira request at '%s': %s %s\n" % \
                                 (url, e.code, BaseHTTPServer.BaseHTTPRequestHandler.responses[e.code][0]))
                 sys.stderr.write("Data posted:\n%s\n" % data)
@@ -488,24 +682,39 @@ class NVDXJIRA(object):
         return res
 
 
-    def addCommentToTicket(self, comment, ticket, cookie):
-        """Add a comment to the ticket."""
-        url = self.config["url"] + self.config["apiurl"] + "issue/" + ticket
+    def linkExistingTickets(self, ticket, cve_id, cookie, linkType="Related"):
+        """Search for existing tickets referencing the given CVE, then link
+           them to the project specific tickets."""
 
-        self.verbose("Adding the following comment to ticket '%s'..." % ticket, 3)
-        self.verbose(comment, 3)
-        data = {
-                "update" : {
-                    "comment" : [
-                        {
-                            "add": {
-                                "body": comment
-                            }
-                        }
-                    ]
+        self.verbose("Linking any existing tickets for %s..." % cve_id, 2)
+
+        existing_tickets = self.getTickets("text~%s%%20AND%%20!(project=%s%%20AND%%20summary~%s)" % \
+                                           (cve_id, self.config["project"], cve_id), cookie)
+
+        for t in existing_tickets:
+            self.verbose("Checking existence of link between %s and %s..." % (t["key"], ticket), 3)
+            found = False
+            for link in t["fields"]["issuelinks"]:
+                key = ""
+                if link.has_key("outwardIssue"):
+                    key = link["outwardIssue"]["key"]
+                elif link.has_key("inwardIssue"):
+                    key = link["inwardIssue"]["key"]
+                if key == ticket:
+                    self.verbose("%s already linked to %s..." % (t["key"], ticket), 3)
+                    found = True
+                    break
+
+            if not found:
+                self.verbose("Linking %s to %s..." % (t, ticket), 3)
+                url = self.config["url"] + self.config["apiurl"] + "issueLink"
+                data = {
+                    "type" : { "name": linkType },
+                    "inwardIssue" : { "key" : t["key"] },
+                    "outwardIssue" : { "key" : ticket }
                 }
-        }
-        self.jiraRequest(url, data, cookie, "PUT")
+                self.jiraRequest(url, data, cookie, "POST")
+
 
 
     def parseConfigFile(self):
@@ -552,6 +761,23 @@ class NVDXJIRA(object):
             sys.exit(EXIT_FAILURE)
 
 
+    def mailSent(self, jira_data, recipient):
+        """Establish if mail was already sent to the specified recipient
+           by looking at any comments."""
+
+        sent_pattern = re.compile("Sent mail to.*%s" % recipient, re.I)
+
+        self.verbose("Checking if we already sent mail to %s..." % recipient, 4)
+
+        if jira_data["fields"].has_key("comment"):
+            for comment in jira_data["fields"]["comment"]["comments"]:
+                m = sent_pattern.search(comment["body"])
+                if m:
+                    self.verbose("Already sent mail to %s." % recipient, 4)
+                    return True
+        return False
+
+
     def parseInput(self):
         """Read input (yes, all in one), and parse as XML.
            Operates on stdin, returns an xml.etree.ElementTree"""
@@ -567,8 +793,6 @@ class NVDXJIRA(object):
         return tree
 
 
-
-
     def parseOptions(self, inargs):
         """Parse given command-line optoins and set appropriate
         attributes.
@@ -580,8 +804,10 @@ class NVDXJIRA(object):
             Usage -- if '-h' or invalid command-line args are given
         """
 
+        global TICKETS
+
         try:
-            opts, args = getopt.getopt(inargs, "Dc:d:hj:lno:p:r:s:t:uv")
+            opts, args = getopt.getopt(inargs, "Dc:d:hj:l:no:p:r:s:t:uv")
         except getopt.GetoptError:
             raise self.Usage(EXIT_FAILURE)
 
@@ -594,6 +820,8 @@ class NVDXJIRA(object):
                 raise self.Usage(EXIT_SUCCESS)
             if option in ("-j"):
                 self.setConfigOption("url", argument)
+            if option in ("-l"):
+                self.setConfigOption("label-actions", argument)
             if option in ("-p"):
                 self.setConfigOption("project", argument)
             if option in ("-r"):
@@ -608,7 +836,10 @@ class NVDXJIRA(object):
                 self.verbosity += 1
 
         if args:
-            raise self.Usage(EXIT_FAILURE)
+            if not self.config["update"]:
+                raise self.Usage(EXIT_FAILURE)
+            else:
+                TICKETS = args
 
 
     def parseRejectFile(self):
@@ -635,44 +866,103 @@ class NVDXJIRA(object):
             sys.exit(EXIT_FAILURE)
 
 
-    def parseSwactionsFile(self):
+    def parseActionsFile(self, which):
         """Parse the file containing actions and regular expressions to
         match against the 'vulernable software list'."""
 
-        swactionsFile = self.config['swactions']
-        self.verbose("Parsing swactions file ('%s')..." % swactionsFile)
+        actionsFile = self.config[which]
+        self.verbose("Parsing %s file ('%s')..." % (which, actionsFile))
 
         try:
-            f = open(swactionsFile, 'r')
-            n = 0
-            for line in f.readlines():
-                n += 1
-                line = re.sub(r'^#.*', '', line).strip()
-                if line:
-                    try:
-                        (action, pattern) = line.split(None, 1)
-                    except ValueError, e:
-                        sys.stderr.write("Invalid format in line %d.\n" % n)
-                        sys.stderr.write(line + "\n")
-                        continue
-                    self.swactions[(action, pattern)] = True
-            f.close()
-
-            self.verifySwactions()
-
-            self.verbose("Found the following valid software action patterns:", 3)
-            for pair in self.swactions.keys():
-                self.verbose("'%s' : '%s'" % (pair[0], pair[1]), 3)
-
+            f = open(actionsFile, 'r')
         except IOError, e:
-            sys.stderr.write("Unable to read '%s': %s\n" % (swactionsFile, e.strerror))
+            sys.stderr.write("Unable to read '%s': %s\n" % (actionsFile, e.strerror))
             sys.exit(EXIT_FAILURE)
+
+        n = 0
+        for line in f.readlines():
+            comment = ""
+            n += 1
+            line = re.sub(r'^#.*', '', line).strip()
+            if line:
+                try:
+                    fields = line.split(None, 2)
+                    action = fields[0]
+                    pattern = fields[1]
+                    if len(fields) > 2:
+                        comment = fields[2]
+                except ValueError, e:
+                    sys.stderr.write("Invalid format in line %d.\n" % n)
+                    sys.stderr.write(line + "\n")
+                    continue
+                self.actions[which][Action(action, pattern, comment)] = True
+        f.close()
+
+        self.verifyActions(which)
+
+        self.verbose("Found the following valid action patterns:", 3)
+        for action in self.actions[which].keys():
+            self.verbose(action, 3)
 
 
     def printInfo(self, cve, ticket):
         for t in ticket.split():
             print "%s/browse/%s" % (self.config["url"], t)
         print cve
+
+
+    def sendMail(self, pattern, recipient, jira_data, cookie):
+        """Send a mail to the given recipient to let them know about the
+           ticket; update the ticket saying that we sent a mail."""
+
+        ticket = jira_data["key"]
+        self.verbose("Sending mail to %s re ticket %s..." % (recipient, ticket), 4)
+
+        summary = jira_data["fields"]["summary"]
+        description = jira_data["fields"]["description"]
+
+        smtp_from = "cvebot@twitter.com"
+        smtp_to = recipient
+        body = """
+Hello!
+
+We recently were notified of a vulnerability in software matching the
+pattern "%s".
+
+I thought you might be interested in this.
+
+Please have a look -- the ticket in question is:
+
+%s/browse/%s -- %s
+
+%s
+
+Thank you, and remember to be excellent to each other and party on.
+
+--
+Please don't shoot the messenger.  I'm just a simple bot, configured to
+send you a mail about this sort of event.  If you have questions about
+this functionality, please see http://go/cvedb and/or contact
+security-team@twitter.com
+""" % (pattern, self.config["url"], ticket, summary, description)
+        msg = MIMEText(body)
+        msg['Subject'] = "%s: %s" % (ticket, summary)
+        msg['From'] = smtp_from
+        msg['To'] = smtp_to
+
+        if self.config["debug"]:
+            print msg.as_string()
+        else:
+            try:
+                s = smtplib.SMTP('localhost')
+                s.sendmail(smtp_from, [smtp_to], msg.as_string())
+                s.quit()
+            except Exception, e:
+                sys.stderr.write("Unable to send mail: %s\n" % e.strerror)
+                return
+
+        comment = "Sent mail to %s." % recipient
+        self.addCommentToTicket(comment, ticket, cookie)
 
 
     def setConfigOption(self, key, val):
@@ -724,16 +1014,29 @@ class NVDXJIRA(object):
              - assign unassigned tickets for triaging
              - nag ticket owners
          """
+
         self.verbose("Updating existing tickets...")
-        # Warning: magic number!  We arbitrarily claim that we should not
-        # have more than 10K tickets that require attention.
-        for ticket in self.getTickets("project=%s%%20AND%%20status=Open&maxResults=10000" %
-                                          self.config["project"], cookie):
+
+        cve_pattern = re.compile("(?P<cve_id>CVE-[0-9]+-[0-9]+)")
+
+        tickets = TICKETS
+        if not tickets:
+            # Warning: magic number!  We arbitrarily claim that we should not
+            # have more than 10K tickets that require attention.
+            tickets = self.getTickets("project=%s%%20AND%%20resolution=Unresolved&maxResults=10000&fields=*all" %
+                                          self.config["project"], cookie)
+
+        for jira_data in tickets:
+            ticket = jira_data["key"]
             self.verbose("Updating existing ticket %s..." % ticket, 2)
 
-            jira_data = self.getTicketData(ticket, cookie)
             swlist = self.getSoftwareListFromTicketData(jira_data)
-            self.applySoftwareActions(swlist, ticket, jira_data, cookie)
+            self.applySoftwareActions(swlist, jira_data, cookie)
+            self.applyLabelActions(jira_data, cookie)
+
+            m = cve_pattern.search(jira_data["fields"]["summary"])
+            if m:
+                self.linkExistingTickets(ticket, m.group("cve_id"), cookie)
 
             updated = jira_data["fields"]["updated"]
 
@@ -741,40 +1044,44 @@ class NVDXJIRA(object):
                 self.olderThan(updated, self.config["assign-threshold"]):
                 assignee = self.getNewTicketOwner()
                 if assignee:
-                    self.assignTicket(ticket, assignee, cookie, "Please investigate.")
+                    self.assignTicket(ticket, assignee, cookie, "Please investigate (see http://go/cve-triaging).")
 
             if self.olderThan(updated, self.config["nag-threshold"]):
                  comment = "This ticket could use some love.  Please consider this a friendly reminder to review this ticket and take the appropriate action."
                  self.addCommentToTicket(comment, ticket, cookie)
 
 
-    def updateTicket(self, cve, ticket, cookie):
+    def updateTicket(self, cve, ticket_data, cookie):
         """If a given ticket is missing the details found in the CVE,
            update it."""
 
-        self.verbose("Updating ticket %s..." % ticket, 2)
+        key = ticket_data["key"]
+        open_states = [ "Open", "Reopened" ]
 
-        jira_data = self.getTicketData(ticket, cookie)
-        if not jira_data:
-            self.verbose("No data found for ticket %s; not updating." % ticket, 2)
+        self.verbose("Updating ticket %s..." % key, 2)
+
+        # newly created tickets may not have all the data
+        if not ticket_data.has_key("fields"):
+            ticket_data = self.getTicketData(key, cookie)
+
+        if ticket_data["fields"]["status"]["name"] not in open_states:
+            self.verbose("Ticket %s is not open; not updating." % key, 2)
             return
 
-        if jira_data["fields"]["status"]["name"] != "Open":
-            self.verbose("Ticket %s is not open; not updating." % ticket, 2)
+        if self.closeIfRejected(cve.data, key, cookie):
             return
 
-        if self.closeIfRejected(cve.data, ticket, cookie):
-            return
-
-        self.updateTicketDetails(cve, ticket, jira_data, cookie)
-        self.applySoftwareActions(cve.data["vulnerable-software-list"], ticket, jira_data, cookie)
+        self.updateTicketDetails(cve, ticket_data, cookie)
+        self.applySoftwareActions(cve.data["vulnerable-software-list"], ticket_data, cookie)
+        self.applyLabelActions(ticket_data, cookie)
 
 
-    def updateTicketDetails(self, cve, ticket, jira_data, cookie):
+    def updateTicketDetails(self, cve, jira_data, cookie):
         """Update the given ticket with all the details from the given
            CVE."""
 
-        self.verbose("Updating ticket %s with details from %s." % (ticket, cve.data["id"]), 3)
+        key = jira_data["key"]
+        self.verbose("Updating ticket %s with details from %s." % (key, cve.data["id"]), 3)
 
         labels = jira_data["fields"]["labels"]
         summary = jira_data["fields"]["summary"]
@@ -791,10 +1098,10 @@ class NVDXJIRA(object):
         cvss_summary = "(CVSS: %s)" % cve.data["score"]
 
         if cvss_label not in labels:
-            url = self.config["url"] + self.config["apiurl"] + "issue/" + ticket
+            url = self.config["url"] + self.config["apiurl"] + "issue/" + key
             summary += " " + cvss_summary
             comment = "Additional details:\n\n{noformat}\n%s\n{noformat}\n" % cve
-            self.addCommentToTicket(comment, ticket, cookie)
+            self.addCommentToTicket(comment, key, cookie)
             data = {
                 "update" : {
                     "summary"   : [
@@ -820,20 +1127,38 @@ class NVDXJIRA(object):
             sys.stderr.write("%s> %s\n" % ('=' * level, msg))
 
 
-    def verifySwactions(self):
-        """Verify that all software actions are valid and supported.
-           Invalid actions are removed from self.swactions."""
+    def verifyActions(self, which):
+        """Verify that all actions are valid and supported.
+           Invalid actions are removed."""
 
         self.verbose("Verifying all given actions are sane...", 2)
-        for pair in self.swactions.keys():
+        for action in self.actions[which].keys():
             ok = False
-            self.verbose("Verifying action '%s'..." % pair[0], 3)
-            for pattern in SUPPORTED_SWACTIONS.keys():
-                if pair[0].startswith(pattern):
+            self.verbose("Verifying action '%s'..." % action.action, 3)
+            for pattern in SUPPORTED_ACTIONS[which].keys():
+                if action.action.startswith(pattern):
                     ok = True
             if not ok:
-                sys.stderr.write("Invalid action '%s'.\n" % pair[0])
-                self.swactions.pop(pair)
+                sys.stderr.write("Invalid action '%s'.\n" % action.action)
+                self.actions[which].pop(action)
+
+
+class Action(object):
+
+    def __init__(self, action, pattern, comment=None):
+        """Construct a software action object with default values."""
+        self.action = action
+        self.pattern = pattern
+        self.comment = comment
+
+
+    def __repr__(self):
+        descr = "%s : %s" % (self.action, self.pattern)
+        if self.comment:
+            descr += " (%s)" % self.comment
+
+        return descr
+
 
 ###
 ### "Main"
@@ -857,7 +1182,11 @@ if __name__ == "__main__":
 
         nvdXjira.parseConfigFile()
         nvdXjira.parseRejectFile()
-        nvdXjira.parseSwactionsFile()
+
+        if nvdXjira.config["label-actions"]:
+            nvdXjira.parseActionsFile("label-actions")
+        if nvdXjira.config["swactions"]:
+            nvdXjira.parseActionsFile("swactions")
 
         cookie = nvdXjira.getJiraCookie()
 

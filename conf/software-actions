@@ -1,0 +1,9 @@
+# In this file you can specify actions to be taken based on regular
+# expressions matching the list of vulnerable software.
+# The supported actions are:
+#  assign:<assignee>
+#  cancel
+#  mail:<recipients>
+#
+# Regular expressions are implicitly matched against the beginning of the
+# cpe string, ie there is an implicit "^".

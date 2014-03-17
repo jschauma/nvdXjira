@@ -1,4 +1,4 @@
-.Dd November 05, 2013
+.Dd March 14, 2014
 .Dt NVDXJIRA 1
 .Os
 .Sh NAME
@@ -6,13 +6,15 @@
 .Nd cross-reference CVEs from the NVD with Jira
 .Sh SYNOPSIS
 .Nm
-.Op Fl Dhuv
+.Op Fl Dhv
 .Op Fl c Ar file
 .Op Fl j Ar url
+.Op Fl l Ar file
 .Op Fl p Ar project
 .Op Fl r Ar file
 .Op Fl s Ar file
 .Op Fl t Ar tag
+.Op Fl u Op tickets
 .Sh DESCRIPTION
 The
 .Nm
@@ -36,6 +38,9 @@ Read configuration from this file.
 Print a short usage statement and exit.
 .It Fl j Ar url
 Specify the base URL for Jira.
+.It Fl l Ar file
+Read actions and patterns to apply to tickets with matching labels from
+this file.
 .It Fl p Ar project
 Create new tickets in this project.
 .It Fl r Ar file
@@ -53,6 +58,10 @@ If this flag is given,
 will not read any input data and only act on existing tickets in Jira.
 It may apply software actions, assign the ticket for triaging or nag the
 current owner.
+.Pp
+If any ticket names are given as arguments,
+.Nm
+will only update those tickets.
 .It Fl v
 Be verbose.
 Can be specified multiple times.
@@ -77,6 +86,9 @@ option is provided,
 will query Jira for all unassigned, open tickets and update them according
 to the given software actions.
 .Pp
+Any tickets mentioning a CVE will be linked to the respective ticket as
+"related", unless another link already exists.
+.Pp
 .Sh AUTOMATIC ACTIONS
 .Nm
 can read a list of actions and patterns from the file specified via the
@@ -84,15 +96,37 @@ can read a list of actions and patterns from the file specified via the
 flag.
 That file should contain lines with two whitespace separated fields
 containing as the first field an 'action' to perform against tickets with
-a 'vulnerable software list' field matching following regular expression.
+a 'vulnerable software list' field matching the regular expression in the
+second field.
+An optional third field can be provided to add as a comment when the given
+action is applied.
 .Pp
 \'actions' may be:
-.Bl -tag -width assign_user_
+.Bl -tag -width mail_user1_user2_
 .It assign:user
 Assign the given ticket to the specified user.
+.It blocker:project
+Create a blocker ticket in the given project.
 .It cancel
 Close the given ticket.
 This is commonly used if the given software is known not to be in use.
+.It mail:user1,user2
+Send an email to user1 and user2 with information about this ticket.
+.It watch:user1,user2
+Add user1 and user2 to the list of watchers.
+.El
+.Pp
+Similarly, actions may be defined for matching jira labels found in the
+file specified via the
+.Fl l
+flag.
+The syntax for the file is the same as above (ie two whitespace separated
+fields, defining actions and regular expressions matched against each
+label).
+The supported actions for this file are:
+.Bl -tag -width mail_user1_user2_
+.It mail:user1,user2
+Send an email to user1 and user2 with information about this ticket.
 .El
 .Sh CONFIGURATION
 By default,
@@ -169,6 +203,11 @@ curl https://nvd.nist.gov/static/feeds/xml/cve/nvdcve-2.0-recent.xml |  \\
 To very verbosely update existing tickets without consuming CVE data:
 .Bd -literal -offset indent
 nvdXjira -u -v -v -v -v
+.Ed
+.Pp
+To only update the existing tickets FOO-123 and BAR-99:
+.Bd -literal -offset indent
+nvdXjira -u FOO-123 BAR-99
 .Ed
 .Sh EXIT STATUS
 .Ex -std
