@@ -28,16 +28,16 @@ How do I use it?
 Create a configuration file for 'nvdXjira', specifying the Jira URL,
 default project, and login credentials:
 
-  username = cvebot
-  password = supahs3kret
-  project = VULN
-  url = https://jira.your.domain
+   username = cvebot
+   password = supahs3kret
+   project = VULN
+   url = https://jira.your.domain
 
 To create new tickets for any CVEs found in the most recent data from NIST
 using the 'security' project and tagging each ticket using the 'nvd'
 label:
 
-curl https://nvd.nist.gov/static/feeds/xml/cve/nvdcve-2.0-recent.xml |  \
+   curl https://nvd.nist.gov/static/feeds/xml/cve/nvdcve-2.0-recent.xml |  \
         nvdXjira -p security -t nvd
 
 Please see the manual page for details.
